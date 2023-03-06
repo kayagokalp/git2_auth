@@ -1,0 +1,10 @@
+[package]
+name = "git2_auth"
+version = "0.0.0"
+edition = "2021"
+description = "A small library to provide easy to use callback handler to authenticate with git2-rs"
+license = "MIT"
+readme = "README.md"
+authors = ["Kaya Gokalp <kaya@kayagokalp.com>"]
+
+[dependencies]
