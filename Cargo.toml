@@ -8,3 +8,4 @@ readme = "README.md"
 authors = ["Kaya Gokalp <kaya@kayagokalp.com>"]
 
 [dependencies]
+git2 = "0.16.1"
