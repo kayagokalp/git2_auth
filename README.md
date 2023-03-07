@@ -1,4 +1,4 @@
-# git2-auth
+# git2_auth
 
 An authentication handler to be used with `git2_rs`. An example usage can be seen below. I used the following repos:
 
