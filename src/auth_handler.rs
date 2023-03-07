@@ -23,6 +23,7 @@ pub struct AuthHandler {
 /// Represents supported methods of SSH credential generation.
 ///
 /// TODO: Convert this into a trait so that downstream can add new methods
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SSHTrialMethod {
     /// In this setup, SSH setup stage will try to generate SSH credential using the username.
     Agent,
@@ -31,6 +32,7 @@ pub enum SSHTrialMethod {
 }
 
 /// Holds all required information for handling SSH credential generation from git-url.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostSSHContext {
     #[allow(dead_code)]
     url: GitURL,
@@ -43,6 +45,7 @@ impl HostSSHContext {
 }
 
 /// Holds all required information for handling SSH credential generation from possible key path.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FileSSHContext {
     #[allow(dead_code)]
     paths: VecDeque<PathBuf>,
