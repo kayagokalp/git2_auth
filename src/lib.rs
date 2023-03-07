@@ -25,7 +25,7 @@ mod tests {
             git2::build::RepoBuilder::new()
                 .branch("master")
                 .fetch_options(fetch_options)
-                .clone("git@github.com:kayagokalp/git2_auth.git", dir.as_ref())
+                .clone("git@github.com:kayagokalp/handtrack-rs.git", dir.as_ref())
                 .unwrap();
         });
     }
