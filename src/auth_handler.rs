@@ -1,21 +1,19 @@
-use std::{collections::VecDeque, env, path::PathBuf};
+use std::{collections::VecDeque, env};
 
 type Username = String;
-type GitURL = String;
 
 const USERNAME_EMPTY: &str = "";
 const USERNAME_GIT: &str = "git";
 
 /// Handler holds all required information for handling authentication callbacks from `git2`.
 pub struct AuthHandler {
-    #[allow(dead_code)]
     config: git2::Config,
     /// Set of usernames to try in case the username is not specified with the callback.
     usernames: VecDeque<Username>,
     /// Set of methods to try for credential generation using SSH.
     ssh_trial_methods: VecDeque<SSHTrialMethod>,
-    /// The url provided by the callback.
-    pub callback_url: Option<GitURL>,
+    /// Shows if the `AuthHandler` tried to use `USER-PASS-PLAINTEXT` before, to prevent looping.
+    tried_plain_user_pass: bool,
     /// The username provieded by the callback.
     pub callback_username: Option<Username>,
 }
@@ -27,36 +25,6 @@ pub struct AuthHandler {
 pub enum SSHTrialMethod {
     /// In this setup, SSH setup stage will try to generate SSH credential using the username.
     Agent,
-    Host(HostSSHContext),
-    File(FileSSHContext),
-}
-
-/// Holds all required information for handling SSH credential generation from git-url.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct HostSSHContext {
-    #[allow(dead_code)]
-    url: GitURL,
-}
-
-impl HostSSHContext {
-    pub fn new(url: GitURL) -> Self {
-        Self { url }
-    }
-}
-
-/// Holds all required information for handling SSH credential generation from possible key path.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FileSSHContext {
-    #[allow(dead_code)]
-    paths: VecDeque<PathBuf>,
-    #[allow(dead_code)]
-    password: String,
-}
-
-impl FileSSHContext {
-    pub fn new(paths: VecDeque<PathBuf>, password: String) -> Self {
-        Self { paths, password }
-    }
 }
 
 impl AuthHandler {
@@ -66,14 +34,14 @@ impl AuthHandler {
         config: git2::Config,
         usernames: VecDeque<Username>,
         ssh_trial_methods: VecDeque<SSHTrialMethod>,
-        callback_url: Option<String>,
+        tried_plain_user_pass: bool,
         callback_username: Option<String>,
     ) -> Self {
         Self {
             config,
             usernames,
             ssh_trial_methods,
-            callback_url,
+            tried_plain_user_pass,
             callback_username,
         }
     }
@@ -95,13 +63,13 @@ impl AuthHandler {
         //  1. Agent
         let mut ssh_trial_method = VecDeque::default();
         ssh_trial_method.push_back(SSHTrialMethod::Agent);
-        let callback_url = None;
         let callback_username = None;
+        let tried_plain_user_pass = false;
         Self::new(
             config,
             usernames,
             ssh_trial_method,
-            callback_url,
+            tried_plain_user_pass,
             callback_username,
         )
     }
@@ -118,14 +86,26 @@ impl AuthHandler {
         allowed: git2::CredentialType,
     ) -> Result<git2::Cred, git2::Error> {
         self.callback_username = username.map(|st| st.to_string());
-        self.callback_url = Some(url.to_string());
-        // The username is missing and we need to try from context.
+
+        // The username is missing and we will try possbilities from context.
         if allowed.contains(git2::CredentialType::USERNAME) {
             return self.handle_username_callback();
-        } else if allowed.contains(git2::CredentialType::SSH_KEY) {
+        } else if allowed.contains(git2::CredentialType::SSH_KEY)
+            && !self.ssh_trial_methods.is_empty()
+        {
             return self.handle_ssh_callback();
         }
-        unimplemented!("user-pass authentication implemented")
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            return git2::Cred::credential_helper(&self.config, url, username);
+        }
+        if allowed.contains(git2::CredentialType::DEFAULT) && !self.tried_plain_user_pass {
+            self.tried_plain_user_pass = true;
+            return git2::Cred::default();
+        }
+
+        Err(git2::Error::from_str(
+            "tried all possible credential types for authentication",
+        ))
     }
 
     /// Removes and returns the next username to from this `AuthHandler`.
@@ -170,8 +150,7 @@ impl AuthHandler {
         let ssh_trial_method = self
             .get_next_ssh_trial_method()
             .ok_or_else(|| git2::Error::from_str("no ssh handler present for authentication"))?;
-        ssh_trial_method
-            .handle_callback(self.callback_url.as_ref(), self.callback_username.as_ref())
+        ssh_trial_method.handle_callback(self.callback_username.as_ref())
     }
 }
 
@@ -180,7 +159,6 @@ impl SSHTrialMethod {
     /// handler is trying.
     pub(crate) fn handle_callback(
         &self,
-        _callback_url: Option<&GitURL>,
         callback_username: Option<&Username>,
     ) -> Result<git2::Cred, git2::Error> {
         match self {
@@ -192,8 +170,6 @@ impl SSHTrialMethod {
                 })?;
                 git2::Cred::ssh_key_from_agent(username)
             }
-            SSHTrialMethod::Host(_) => unimplemented!("SSH trial with host is not implemented"),
-            SSHTrialMethod::File(_) => unimplemented!("SSH trial with file is not implemented"),
         }
     }
 }
