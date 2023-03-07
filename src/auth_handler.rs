@@ -90,9 +90,8 @@ impl AuthHandler {
         // The username is missing and we will try possbilities from context.
         if allowed.contains(git2::CredentialType::USERNAME) {
             return self.handle_username_callback();
-        } else if allowed.contains(git2::CredentialType::SSH_KEY)
-            && !self.ssh_trial_methods.is_empty()
-        {
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) && !self.ssh_trial_methods.is_empty() {
             return self.handle_ssh_callback();
         }
         if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
