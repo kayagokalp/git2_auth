@@ -22,10 +22,12 @@ mod tests {
                 .download_tags(git2::AutotagOption::All)
                 .update_fetchhead(true);
 
+            // TODO: change the repo url to the current git2_auth repo once it is public so that it
+            // can be used in the CI.
             git2::build::RepoBuilder::new()
                 .branch("master")
                 .fetch_options(fetch_options)
-                .clone("git@github.com:kayagokalp/git2_auth.git", dir.as_ref())
+                .clone("git@github.com:kayagokalp/handtrack-rs.git", dir.as_ref())
                 .unwrap();
         });
     }
