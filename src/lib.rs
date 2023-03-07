@@ -1,21 +1,32 @@
-mod auth_handler;
-use auth_handler::AuthContext;
+pub mod auth_handler;
+mod utils;
 
-pub fn handle_auth_callback<'a>(
-    auth_context: &'a mut AuthContext<'a>,
-    url: &'a str,
-    username: Option<&'a str>,
-    allowed: git2::CredentialType,
-) -> Result<git2::Cred, git2::Error> {
-    // Update context with the provided url and username.
-    auth_context.callback_username = username;
-    auth_context.callback_url = Some(url);
+#[cfg(test)]
+mod tests {
+    use crate::{auth_handler::AuthHandler, utils::tests_utils::with_tmp_dir};
 
-    // The username is missing and we need to try from context.
-    if allowed.contains(git2::CredentialType::USERNAME) {
-        return auth_context.handle_username_callback();
-    } else if allowed.contains(git2::CredentialType::SSH_KEY) {
-        return auth_context.handle_ssh_callback();
+    #[test]
+    fn fetch_with_git_url() {
+        with_tmp_dir(|dir| {
+            // setup callbacks
+            let mut callback = git2::RemoteCallbacks::new();
+            let config = git2::Config::open_default().unwrap();
+            let mut auth_handler = AuthHandler::default_with_config(config);
+            callback.credentials(move |url, username, allowed| {
+                auth_handler.handle_callback(url, username, allowed)
+            });
+
+            let mut fetch_options = git2::FetchOptions::new();
+            fetch_options
+                .remote_callbacks(callback)
+                .download_tags(git2::AutotagOption::All)
+                .update_fetchhead(true);
+
+            git2::build::RepoBuilder::new()
+                .branch("master")
+                .fetch_options(fetch_options)
+                .clone("git@github.com:kayagokalp/git2_auth.git", dir.as_ref())
+                .unwrap();
+        });
     }
-    todo!()
 }

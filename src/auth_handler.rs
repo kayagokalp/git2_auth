@@ -6,29 +6,33 @@ type GitURL = String;
 const USERNAME_EMPTY: &str = "";
 const USERNAME_GIT: &str = "git";
 
-/// Holds all required information for handling authentication callbacks from `git2`.
-pub struct AuthContext<'a> {
-    config: &'a git2::Config,
+/// Handler holds all required information for handling authentication callbacks from `git2`.
+pub struct AuthHandler {
+    #[allow(dead_code)]
+    config: git2::Config,
     /// Set of usernames to try in case the username is not specified with the callback.
     usernames: VecDeque<Username>,
     /// Set of methods to try for credential generation using SSH.
-    ssh_trial_methods: VecDeque<SSHTrialContext<'a>>,
+    ssh_trial_methods: VecDeque<SSHTrialMethod>,
     /// The url provided by the callback.
-    pub callback_url: Option<&'a str>,
+    pub callback_url: Option<GitURL>,
     /// The username provieded by the callback.
-    pub callback_username: Option<&'a str>,
+    pub callback_username: Option<Username>,
 }
 
 /// Represents supported methods of SSH credential generation.
-pub enum SSHTrialContext<'a> {
+///
+/// TODO: Convert this into a trait so that downstream can add new methods
+pub enum SSHTrialMethod {
     /// In this setup, SSH setup stage will try to generate SSH credential using the username.
     Agent,
     Host(HostSSHContext),
-    File(FileSSHContext<'a>),
+    File(FileSSHContext),
 }
 
 /// Holds all required information for handling SSH credential generation from git-url.
 pub struct HostSSHContext {
+    #[allow(dead_code)]
     url: GitURL,
 }
 
@@ -39,24 +43,28 @@ impl HostSSHContext {
 }
 
 /// Holds all required information for handling SSH credential generation from possible key path.
-pub struct FileSSHContext<'a> {
+pub struct FileSSHContext {
+    #[allow(dead_code)]
     paths: VecDeque<PathBuf>,
-    password: &'a str,
+    #[allow(dead_code)]
+    password: String,
 }
 
-impl<'a> FileSSHContext<'a> {
-    pub fn new(paths: VecDeque<PathBuf>, password: &'a str) -> Self {
+impl FileSSHContext {
+    pub fn new(paths: VecDeque<PathBuf>, password: String) -> Self {
         Self { paths, password }
     }
 }
 
-impl<'a> AuthContext<'a> {
+impl AuthHandler {
+    /// Creates a new `AuthHandler` from all fields of the struct. If there are no specific reasons
+    /// not to, `default_with_config` should be prefered.
     pub fn new(
-        config: &'a git2::Config,
+        config: git2::Config,
         usernames: VecDeque<Username>,
-        ssh_trial_methods: VecDeque<SSHTrialContext<'a>>,
-        callback_url: Option<&'a str>,
-        callback_username: Option<&'a str>,
+        ssh_trial_methods: VecDeque<SSHTrialMethod>,
+        callback_url: Option<String>,
+        callback_username: Option<String>,
     ) -> Self {
         Self {
             config,
@@ -69,7 +77,7 @@ impl<'a> AuthContext<'a> {
 
     /// Creates a new `AuthContext` with provided `git2::Config` and default values for other
     /// context used during handling authentication callbacks.
-    pub fn default_with_config(config: &'a git2::Config) -> Self {
+    pub fn default_with_config(config: git2::Config) -> Self {
         // If username is not specified, tries the following sources:
         //  1. Empty string ""
         //  2. "git"
@@ -80,7 +88,10 @@ impl<'a> AuthContext<'a> {
         if let Ok(env_username) = env::var("USER") {
             usernames.push_back(env_username);
         }
-        let ssh_trial_method = VecDeque::default();
+        // By default try to do SSH authentication from:
+        //  1. Agent
+        let mut ssh_trial_method = VecDeque::default();
+        ssh_trial_method.push_back(SSHTrialMethod::Agent);
         let callback_url = None;
         let callback_username = None;
         Self::new(
@@ -92,40 +103,85 @@ impl<'a> AuthContext<'a> {
         )
     }
 
-    /// Removes and returns the next username to from auth context.
-    pub fn get_last_username(&mut self) -> Option<Username> {
+    /// Handle a git2 remote credential callback dependening on the current state of the handler.
+    /// This dispatches the callback to the correct handler. For example:
+    ///
+    /// 1. `git2::CredentialType::USERNAME` calls are dispathced to `handle_username_callback()`
+    /// 2. `git2::CredentialType::SSH_KEY` calls are dispatched to `handle_ssh_callback()`
+    pub fn handle_callback(
+        &mut self,
+        url: &str,
+        username: Option<&str>,
+        allowed: git2::CredentialType,
+    ) -> Result<git2::Cred, git2::Error> {
+        self.callback_username = username.map(|st| st.to_string());
+        self.callback_url = Some(url.to_string());
+        // The username is missing and we need to try from context.
+        if allowed.contains(git2::CredentialType::USERNAME) {
+            return self.handle_username_callback();
+        } else if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return self.handle_ssh_callback();
+        }
+        unimplemented!("user-pass authentication implemented")
+    }
+
+    /// Removes and returns the next username to from this `AuthHandler`.
+    pub fn get_next_username(&mut self) -> Option<Username> {
         let usernames = &mut self.usernames;
         usernames.pop_front()
     }
 
-    pub fn get_last_ssh_trial_method(&mut self) -> Option<SSHTrialContext<'a>> {
+    /// Removes and returns the next ssh trial method to from this `AuthHandler`.
+    pub fn get_next_ssh_trial_method(&mut self) -> Option<SSHTrialMethod> {
         let methods = &mut self.ssh_trial_methods;
         methods.pop_front()
     }
 
+    /// Handles a `git2::CredentialType::USERNAME` callback and tries to generate a credential from
+    /// all possible username options the handler currently have.
+    ///
+    /// If this `AuthHandler` is created with `default_with_config` the options are:
+    ///
+    /// 1. Empty string ("")
+    /// 2. "git"
+    /// 3. $USER from env
+    ///
+    /// This handler is used if the callback does not provide a username. That happens when the
+    /// username cannot be infered from the url.
     pub(crate) fn handle_username_callback(&mut self) -> Result<git2::Cred, git2::Error> {
-        let username = self.get_last_username().ok_or_else(|| {
+        let username = self.get_next_username().ok_or_else(|| {
             git2::Error::from_str("tried all possible usernames for the callback")
         })?;
         git2::Cred::username(&username)
     }
 
+    /// Handles a `git2::CredentialType::SSH_KEY` callback and tries to generate a credential from
+    /// all possible SSH trial methods the handler currently have.
+    ///
+    /// If this `AuthHandler` is created iwth `default_with_config` the options are:
+    ///
+    /// 1. Agent
+    ///
+    /// This handler dispatches the callback to the current method's handler.
     pub(crate) fn handle_ssh_callback(&mut self) -> Result<git2::Cred, git2::Error> {
         let ssh_trial_method = self
-            .get_last_ssh_trial_method()
+            .get_next_ssh_trial_method()
             .ok_or_else(|| git2::Error::from_str("no ssh handler present for authentication"))?;
-        ssh_trial_method.handle_callback(self.callback_url, self.callback_username)
+        ssh_trial_method
+            .handle_callback(self.callback_url.as_ref(), self.callback_username.as_ref())
     }
 }
 
-impl<'a> SSHTrialContext<'a> {
+impl SSHTrialMethod {
+    /// Handles the dispatched `git2::CredentialType::SSH_KEY` depending on the current method the
+    /// handler is trying.
     pub(crate) fn handle_callback(
         &self,
-        _callback_url: Option<&str>,
-        callback_username: Option<&str>,
+        _callback_url: Option<&GitURL>,
+        callback_username: Option<&Username>,
     ) -> Result<git2::Cred, git2::Error> {
         match self {
-            SSHTrialContext::Agent => {
+            SSHTrialMethod::Agent => {
                 // SSH authentication is with agent is going to be attempted, this means callback
                 // must be providing a username.
                 let username = callback_username.ok_or_else(|| {
@@ -133,8 +189,8 @@ impl<'a> SSHTrialContext<'a> {
                 })?;
                 git2::Cred::ssh_key_from_agent(username)
             }
-            SSHTrialContext::Host(_) => todo!(),
-            SSHTrialContext::File(_) => todo!(),
+            SSHTrialMethod::Host(_) => unimplemented!("SSH trial with host is not implemented"),
+            SSHTrialMethod::File(_) => unimplemented!("SSH trial with file is not implemented"),
         }
     }
 }
